@@ -3,8 +3,8 @@ proj-major := 1
 proj-minor := 0
 proj-version := $(proj-major).$(proj-minor)
 
-CFLAGS := -Wall -g
-LDFLAGS :=
+CFLAGS ?= -g
+CFLAGS += -Wall
 
 prefix := /usr/local
 bindir := $(prefix)/bin
