@@ -1,26 +1,29 @@
-#include <sys/types.h>
-#include <sys/socket.h>
+#include <err.h>
+#include <errno.h>
+#include <libgen.h>
+#include <limits.h>
 #include <linux/qrtr.h>
 #include <linux/netlink.h>
 #include <linux/rtnetlink.h>
-#include <unistd.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <stdio.h>
-#include <err.h>
-#include <errno.h>
-#include <limits.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <unistd.h>
 
-#include "map.h"
+#include "addr.h"
 #include "hash.h"
-#include "waiter.h"
 #include "list.h"
-#include "util.h"
+#include "map.h"
 #include "ns.h"
+#include "util.h"
+#include "waiter.h"
 
 #include "libqrtr.h"
+#include "logging.h"
 
 static const char *ctrl_pkt_strings[] = {
 	[QRTR_TYPE_HELLO]	= "hello",
@@ -101,7 +104,7 @@ static struct node *node_get(unsigned int node_id)
 
 	rc = map_create(&node->services);
 	if (rc)
-		errx(1, "unable to create map");
+		LOGE_AND_EXIT("unable to create map");
 
 	rc = map_put(&nodes, hash_u32(node_id), &node->mi);
 	if (rc) {
@@ -682,75 +685,9 @@ static void node_mi_free(struct map_item *mi)
 	free(node);
 }
 
-static void qrtr_set_address(uint32_t addr)
+static void usage(const char *progname)
 {
-	struct {
-		struct nlmsghdr nh;
-		struct ifaddrmsg ifa;
-		char attrbuf[32];
-	} req;
-	struct {
-		struct nlmsghdr nh;
-		struct nlmsgerr err;
-	} resp;
-	struct sockaddr_qrtr sq;
-	struct rtattr *rta;
-	socklen_t sl = sizeof(sq);
-	int sock;
-	int ret;
-
-	/* Trigger loading of the qrtr kernel module */
-	sock = socket(AF_QIPCRTR, SOCK_DGRAM, 0);
-	if (sock < 0)
-		err(1, "failed to create AF_QIPCRTR socket");
-
-	ret = getsockname(sock, (void*)&sq, &sl);
-	if (ret < 0)
-		err(1, "getsockname()");
-	close(sock);
-
-	/* Skip configuring the address, if it's same as current */
-	if (sl == sizeof(sq) && sq.sq_node == addr)
-		return;
-
-	sock = socket(AF_NETLINK, SOCK_DGRAM, NETLINK_ROUTE);
-	if (sock < 0)
-		err(1, "failed to create netlink socket");
-
-	memset(&req, 0, sizeof(req));
-	req.nh.nlmsg_len = NLMSG_SPACE(sizeof(struct ifaddrmsg));
-	req.nh.nlmsg_flags = NLM_F_REQUEST | NLM_F_ACK;
-	req.nh.nlmsg_type = RTM_NEWADDR;
-	req.ifa.ifa_family = AF_QIPCRTR;
-
-	rta = (struct rtattr *)(((char *) &req) + req.nh.nlmsg_len);
-	rta->rta_type = IFA_LOCAL;
-	rta->rta_len = RTA_LENGTH(sizeof(addr));
-	memcpy(RTA_DATA(rta), &addr, sizeof(addr));
-
-	req.nh.nlmsg_len += rta->rta_len;
-
-	ret = send(sock, &req, req.nh.nlmsg_len, 0);
-	if (ret < 0)
-		err(1, "failed to send netlink request");
-
-	ret = recv(sock, &resp, sizeof(resp), 0);
-	if (ret < 0)
-		err(1, "failed to receive netlink response");
-
-	if (resp.nh.nlmsg_type == NLMSG_ERROR && resp.err.error != 0) {
-		errno = -resp.err.error;
-		err(1, "failed to configure node id");
-	}
-
-	close(sock);
-}
-
-static void usage(void)
-{
-	extern char *__progname;
-
-	fprintf(stderr, "%s [-f] [<node-id>]\n", __progname);
+	fprintf(stderr, "%s [-f] [-s] [<node-id>]\n", progname);
 	exit(1);
 }
 
@@ -763,55 +700,62 @@ int main(int argc, char **argv)
 	struct waiter *w;
 	socklen_t sl = sizeof(sq);
 	bool foreground = false;
+	bool use_syslog = false;
 	char *ep;
 	int opt;
 	int rc;
+	const char *progname = basename(argv[0]);
 
-	while ((opt = getopt(argc, argv, "f")) != -1) {
+	while ((opt = getopt(argc, argv, "fs")) != -1) {
 		switch (opt) {
 		case 'f':
 			foreground = true;
 			break;
+		case 's':
+			use_syslog = true;
+			break;
 		default:
-			usage();
+			usage(progname);
 		}
 	}
+
+	qlog_setup(progname, use_syslog);
 
 	if (optind < argc) {
 		addr = strtoul(argv[optind], &ep, 10);
 		if (argv[1][0] == '\0' || *ep != '\0' || addr >= UINT_MAX)
-			usage();
+			usage(progname);
 
 		qrtr_set_address(addr);
 		optind++;
 	}
 
 	if (optind != argc)
-		usage();
+		usage(progname);
 
 	w = waiter_create();
 	if (w == NULL)
-		errx(1, "unable to create waiter");
+		LOGE_AND_EXIT("unable to create waiter");
 
 	list_init(&ctx.lookups);
 
 	rc = map_create(&nodes);
 	if (rc)
-		errx(1, "unable to create node map");
+		LOGE_AND_EXIT("unable to create node map");
 
 	ctx.sock = socket(AF_QIPCRTR, SOCK_DGRAM, 0);
 	if (ctx.sock < 0)
-		err(1, "unable to create control socket");
+		PLOGE_AND_EXIT("unable to create control socket");
 
 	rc = getsockname(ctx.sock, (void*)&sq, &sl);
 	if (rc < 0)
-		err(1, "getsockname()");
+		PLOGE_AND_EXIT("getsockname()");
 	sq.sq_port = QRTR_PORT_CTRL;
 	ctx.local_node = sq.sq_node;
 
 	rc = bind(ctx.sock, (void *)&sq, sizeof(sq));
 	if (rc < 0)
-		err(1, "bind control socket");
+		PLOGE_AND_EXIT("bind control socket");
 
 	ctx.bcast_sq.sq_family = AF_QIPCRTR;
 	ctx.bcast_sq.sq_node = QRTR_NODE_BCAST;
@@ -819,7 +763,7 @@ int main(int argc, char **argv)
 
 	rc = say_hello(&ctx);
 	if (rc)
-		err(1, "unable to say hello");
+		PLOGE_AND_EXIT("unable to say hello");
 
 	/* If we're going to background, fork and exit parent */
 	if (!foreground && fork() != 0) {

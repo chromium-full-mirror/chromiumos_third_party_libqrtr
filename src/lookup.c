@@ -1,17 +1,19 @@
+#include <err.h>
+#include <errno.h>
+#include <libgen.h>
+#include <linux/qrtr.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/time.h>
-#include <linux/qrtr.h>
 #include <unistd.h>
-#include <stdlib.h>
-#include <string.h>
-#include <stdio.h>
-#include <errno.h>
-#include <err.h>
 
 #include "libqrtr.h"
-#include "util.h"
+#include "logging.h"
 #include "ns.h"
+#include "util.h"
 
 static const struct {
 	unsigned int service;
@@ -103,6 +105,9 @@ int main(int argc, char **argv)
 	int sock;
 	int len;
 	int rc;
+	const char *progname = basename(argv[0]);
+
+	qlog_setup(progname, false);
 
 	rc = 0;
 	memset(&pkt, 0, sizeof(pkt));
@@ -115,16 +120,18 @@ int main(int argc, char **argv)
 	case 2: pkt.server.service = read_num_le(argv[1], &rc);
 	case 1: break;
 	}
-	if (rc)
-		errx(1, "Usage: %s [<service> [<instance> [<filter>]]]", argv[0]);
+	if (rc) {
+		fprintf(stderr, "Usage: %s [<service> [<instance> [<filter>]]]\n", progname);
+		exit(1);
+	}
 
 	sock = socket(AF_QIPCRTR, SOCK_DGRAM, 0);
 	if (sock < 0)
-		err(1, "sock(AF_QIPCRTR)");
+		PLOGE_AND_EXIT("sock(AF_QIPCRTR)");
 
 	rc = getsockname(sock, (void *)&sq, &sl);
 	if (rc || sq.sq_family != AF_QIPCRTR || sl != sizeof(sq))
-		err(1, "getsockname()");
+		PLOGE_AND_EXIT("getsockname()");
 
 	sq.sq_port = QRTR_PORT_CTRL;
 
@@ -135,11 +142,11 @@ int main(int argc, char **argv)
 
 	rc = setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 	if (rc)
-		err(1, "setsockopt(SO_RCVTIMEO)");
+		PLOGE_AND_EXIT("setsockopt(SO_RCVTIMEO)");
 
 	rc = sendto(sock, &pkt, sizeof(pkt), 0, (void *)&sq, sizeof(sq));
 	if (rc < 0)
-		err(1, "sendto()");
+		PLOGE_AND_EXIT("sendto()");
 
 	printf("  Service Version Instance Node  Port\n");
 
@@ -149,7 +156,7 @@ int main(int argc, char **argv)
 		unsigned int i;
 
 		if (len < sizeof(pkt) || type != QRTR_TYPE_NEW_SERVER) {
-			warn("invalid/short packet");
+			PLOGW("invalid/short packet");
 			continue;
 		}
 
@@ -182,7 +189,7 @@ int main(int argc, char **argv)
 	}
 
 	if (len < 0)
-		err(1, "recv()");
+		PLOGE_AND_EXIT("recv()");
 
 	close(sock);
 
