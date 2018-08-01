@@ -403,6 +403,7 @@ static int qmi_encode(struct qmi_elem_info *ei_array, void *out_buf,
 		case QMI_UNSIGNED_2_BYTE:
 		case QMI_UNSIGNED_4_BYTE:
 		case QMI_UNSIGNED_8_BYTE:
+		case QMI_SIGNED_1_BYTE_ENUM:
 		case QMI_SIGNED_2_BYTE_ENUM:
 		case QMI_SIGNED_4_BYTE_ENUM:
 			/* Check to avoid out of range buffer access */
@@ -706,6 +707,7 @@ static int qmi_decode(struct qmi_elem_info *ei_array, void *out_c_struct,
 		case QMI_UNSIGNED_2_BYTE:
 		case QMI_UNSIGNED_4_BYTE:
 		case QMI_UNSIGNED_8_BYTE:
+		case QMI_SIGNED_1_BYTE_ENUM:
 		case QMI_SIGNED_2_BYTE_ENUM:
 		case QMI_SIGNED_4_BYTE_ENUM:
 			rc = qmi_decode_basic_elem(buf_dst, buf_src,
@@ -792,9 +794,9 @@ ssize_t qmi_encode_message(struct qrtr_packet *pkt, int type, int msg_id,
 	return pkt->data_len;
 }
 
-int qmi_decode_header(struct qrtr_packet *pkt, unsigned int *msg_id)
+int qmi_decode_header(const struct qrtr_packet *pkt, unsigned int *msg_id)
 {
-	struct qmi_header *qmi = pkt->data;
+	const struct qmi_header *qmi = pkt->data;
 
 	if (qmi->msg_len != pkt->data_len - sizeof(*qmi)) {
 		LOGW("[RMTFS] Invalid length of incoming qmi request\n");
